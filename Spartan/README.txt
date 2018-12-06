@@ -1,0 +1,63 @@
+#***************************************
+# Readme for Spartan and Mace MCNP codes
+#***************************************
+
+SETUP
+Copy the files to Bridgman or your computer.
+
+Requirements:
+These codes use MCNP 6.1 and python with numpy
+To use these programs on Bridgman make sure to load the appropriate modules:
+
+module use /app/afit/modulefiles/
+module add mcnp
+module add tools/python3.5.2
+
+In addition, install numpy for yourself using the following command:
+python3 -m pip install --user numpy
+python3 -m pip install --user matplotlib
+
+Note: if you have module add compilers/gcc4.9.3 in your .bashrc file or manually added it, MCNP will not run correctly on the cluster.
+Use the following command to unload this module:
+module rm compilers/gcc4.9.3
+
+There are two main files that you will want to run.
+1. StartCode.sh
+2. Analyze.py
+
+Note that you must have executable rights to these files and others in the folder.  
+So, issue the following comamnd WHEN IN THE FOLDER WITH THE CODE:
+chmod u+x *
+
+RUNNING THE CODE
+StartCode is the main code for taking user input and automatically creating the MCNP input decks, and
+then submitting the jobs to your computer or to the cluster.  The output is saved to a user defined folder.
+
+To run the code and save the input and output files to "MyFolder" change to the code directory and give the command:
+./StartCode.sh MyFolder
+
+If you get an error message stating containing "/bin/bash^M", then the windows to linux file transfer introduced carriage return
+discrepancies.  In the folder with the StartCode.sh file issue the following command 
+sed -i 's/^M$//' *
+To get the ^M portion, hold down CTRL and press keys v then m.
+
+The subesequent output tells you the MCNP input files are being created and then run.  When the "Run Complete" message appears
+you are ready to analyze the data.
+
+NOTE: submitting jobs to the cluster (cluster=1) will submit ALL of the theta and phi angles unless runbatch.sh is modified
+Thus, a large number of jobs (612ish) will be submitted.  Be wise in submitting these jobs as they will clog up Bridgman and 
+prevent others from using it. Currently only 10 jobs can run at a time resulting in hundreds waiting in the queue.  
+Make sure to kill any jobs that you don't want to run (see killruns.sh for basic batch kill script)
+
+ANALYZING THE DATA
+As a minimum, you will need to change variable, "MainDir", in Analyze.py to reference the MCNP output folder. 
+Some of the other variables will need to be changed if you want to split the spectrum or bins differently.
+
+Example change:
+MainDir='./MyFolder'          #Directory with MCNP output (*.o) files
+
+To load the MCNP output, rebin the data, and calculate the DRM and output parameters, use the following command:
+python3 Analyze.py
+
+Note that the file Output.inp is created in MainDir containing the calculated performance metrics.  Feel free to modifity this
+file with the parameters important to your project.

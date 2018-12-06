@@ -1,0 +1,222 @@
+# Make all numpy available via shorter 'num' prefix
+import numpy as np
+# Make all matlib functions accessible at the top level via M.func()
+import numpy.matlib as M
+# Make some matlib functions accessible directly at the top level via, e.g. rand(3,3)
+from numpy.matlib import rand,zeros,ones,empty,eye
+# from pysettings import *
+#T = np.transpose
+import os, subprocess
+
+# *********************************************************************************************
+# *                                 Analysis Settings:                                        *
+# *********************************************************************************************
+MainDir='./AllNeutrons'          #Directory with MCNP output (*.o) files
+lowerbound=200            # Lower energy spectrum cut-off (keV)
+upperbound=10000000       # Upper energy cut-off (for Compton only, keV)
+lbins=100                 # Custom binning: lower bin bound (keV)
+ubins=10                  # Custom binning: upper bin bound (keV)
+nbins=100                 # Custom binning: number of bins
+
+
+
+
+# *********************************************************************************************
+# *                                     Run Analysis                                          *
+# *********************************************************************************************
+# MAC function without shifting
+def MAC(Eigvec):
+    # Initialize variables
+    uu = 0
+    vv = 0
+    AutoPMAC = zeros((np.size(Eigvec, 1), np.size(Eigvec, 1)))
+    for kk in range(0,np.size(Eigvec, 1)):
+        for jj in range(0,np.size(Eigvec, 1)):
+            # Calculate MAC number of all u, v combinations
+            AutoPMAC[uu, vv] = ((((Eigvec[:, jj]).real).T).dot((Eigvec[:, kk]).real)) ** 2 / ((((Eigvec[:, jj]).real).T).dot((Eigvec[:, jj]).real) * (((Eigvec[:, kk]).real).T).dot((Eigvec[:, kk]).real))
+            uu += 1
+        uu = 0
+        vv += 1
+    return AutoPMAC
+
+# MAC function with shifting
+def MACloop(Eigvec):
+    # Initialize variables
+    uu = 0
+    vv = 0
+    AutoPMAC = zeros((np.size(Eigvec, 1), 1))
+    for kk in range(0,1):
+        for jj in range(0,np.size(Eigvec, 1)):
+            # Calculate MAC number of all u, v combinations
+            AutoPMAC[uu, vv] = ((((Eigvec[:, jj]).real).T).dot((Eigvec[:, kk]).real)) ** 2 / ((((Eigvec[:, jj]).real).T).dot((Eigvec[:, jj]).real) * (((Eigvec[:, kk]).real).T).dot((Eigvec[:, kk]).real))
+            uu += 1
+        uu = 0
+        vv += 1
+    return AutoPMAC
+
+
+# Function to load MCNP spectrum and create DRM
+def mcnpprocess(ResDir=None, lowerbound=None, upperbound=None, lbins=None, ubins=None, nbins=None):
+    # Load file names
+    ftemp1 = os.listdir(ResDir)
+    ftemp2 = []
+    for names in ftemp1:
+        if names.endswith("AllNeutronsth011ph011.o"):
+            ftemp2.append(names)
+
+    ftemp = sorted(ftemp2)
+    # Must use 3 digits for theta and phi in naming to work (aka write 90 as
+    # 090)
+    rtheta=-1*ones((1,np.size(ftemp, 0)))
+    rphi=-1*ones((1,np.size(ftemp, 0)))
+    DRM=zeros((1,1))
+    # Create DRM
+    for gg in range(0,np.size(ftemp, 0)):
+        rtheta[0,gg] = int(ftemp[gg][-10:-7])
+        rphi[0,gg] = int(ftemp[gg][-5:-2])
+
+        fname = ftemp[gg][:-2]
+        #Get header info
+        print(''.join([ResDir, "/", fname, ".o"]))
+        fid = open((''.join([ResDir, "/", fname, ".o"])), "r")
+        trigger =0
+        for num, line in enumerate(fid, 1):
+            if "1tally      " in line:
+                a=line.split("=")[-1]
+                num_start=num
+                trigger=1
+            elif "total" in line and trigger>0:
+                if trigger==1:
+                    num_end=num
+                    trigger=trigger+1
+                trigger=trigger+1 
+                #print(line)
+            elif "range of sampled" in line:
+                b=line.split("=")[-1]
+        fid.close()
+        nSP=int(a)
+        VRval=float(b.split("to")[-1])
+        binstemp=[]
+        valtemp=[]
+        # Load MCNP spectrum and save values
+        fid = open((''.join([ResDir, "/", fname, ".o"])), "r")
+        for num, line in enumerate(fid, 1):
+            if np.logical_and(num>num_start+10, num<num_end):      #Made Change here from +5 to +10
+                datatemp=list(filter(None, line.split(" ")))
+                binstemp=np.append(binstemp,float(datatemp[0]))
+                valtemp=np.append(valtemp,float(datatemp[1]))
+        fid.close()
+
+        # Get list of theta and phi values
+        utheta = np.unique(rtheta[rtheta > -1], axis=1)
+        uphi = np.unique(rphi[rtheta > -1], axis=1)
+
+        # Save values within requested range (lowerbound, upperbound, etc)
+        pickbins = (binstemp*1000 > float(lowerbound)) & (binstemp*1000 < float(upperbound))
+        ind1 = np.nonzero(rtheta[0,gg] == utheta)
+        ind2 = np.nonzero(rphi[0,gg] == uphi)
+        # Have to save values to DRM matix.  Then remove extra entries in matrix
+        if np.size(DRM,0) < np.size(utheta,1): DRM = np.insert(DRM, np.size(utheta,1)-1, 0, axis=0)  
+        if np.size(DRM,1) < np.size(uphi,1): DRM = np.insert(DRM, np.size(uphi,1)-1, 0, axis=1)
+        DRM[ind1[1], ind2[1]] = sum(valtemp[pickbins])
+    return DRM, utheta, uphi, binstemp, valtemp
+
+
+# Load MCNP spectrum info
+def getData(fid=None, lbins=None, ubins=None, nbins=None, VRval=None, nSP=None):
+    # Get data
+    temp = np.genfromtxt(fid,
+           dtype={'names': ('counts', 'runNum'),
+           'formats': ('f8', 'i8')},invalid_raise = False)
+
+    counts = temp[:]['counts']
+    #runNum = temp[:]['nPart']
+    bins = np.linspace(float(lbins), float(ubins), num = nbins)
+    nParts = np.size(counts)
+    val = zeros((nbins-1,1))
+    eDep = zeros((nbins-1,1))
+    for ii in range(0,nParts):
+        if (counts[ii] > 0):
+                eDeptemp = counts[ii]
+                eDep[:][(bins[:-1] <= counts[ii]) & (bins[1:] > counts[ii])] += counts[ii]*VRval/nSP
+                val[:][(bins[:-1] <= counts[ii]) & (bins[1:] > counts[ii])] += VRval/nSP
+    return bins, val, eDep
+
+
+def RSManalyze(MainDir, lowerbound, upperbound, lbins, ubins, nbins):
+    # Load files and create DRM
+    DRM, DRMtheta, DRMphi, Energy, Flux = mcnpprocess(MainDir, lowerbound, upperbound, lbins, ubins, nbins)
+    # Remove mean value from DRM
+    #DRMred = DRM.copy()
+    #DRMmean = zeros((1, np.size(DRM,1)))
+    #for ii in range(0,np.size(DRM,1)):
+        #DRMmean[0,ii] = np.mean(DRM[:, ii])
+        #DRMred[:, ii] = DRMred[:, ii] - DRMmean[0,ii]
+        
+    # Calculate MAC without shifts (Spartan class)
+    #AutoPMAC = MAC(DRMred)
+    #maxSingleMAC = (np.triu(AutoPMAC) - np.eye(np.size(AutoPMAC, 0))).max()
+    #avgSingleMAC = np.sum(np.sum(np.triu(AutoPMAC) - np.eye(np.size(AutoPMAC, 0)))) / np.sum(np.arange(1,np.size(DRM,1)))
+
+    # Calculate MAC with shifts (Eigen class, i.e Mace)
+    #maxMat = zeros(((np.size(DRMred,1)+np.size(DRMred,0)-1),np.size(DRMred,1)))
+    #for pp in range(0,np.size(DRM,1)):
+    #    DRMperm = DRMred[:, pp:]
+    #    for gg in range(0,np.size(DRM,0)):
+    #        if gg == 0 and pp < np.size(DRMred,1)-1:
+    #            PMAC = MACloop(DRMperm)
+    #        elif gg == 0 and pp == np.size(DRMred,1)-1: pass
+    #                # Skip comparing with itself - just want to compare with
+    #                # permutations for final vector
+    #        else:
+    #            PMAC = MACloop(np.c_[DRMred[:, pp], np.roll(DRMperm,gg, 0)])
+    #    maxMat[gg + pp, pp] = (PMAC[1:]).max()
+                          
+    # Print results 
+    #print(DRM)
+    #print(DRMred)
+    #print("Spartan class maxMAC = ", maxSingleMAC)
+    #print("Spartan class avgMAC = ", avgSingleMAC)
+    #maxMAC = ((maxMat).max()).max()
+    #print("Eigen class maxMAC = ", maxMAC)
+    #avgMAC = np.mean(maxMat[maxMat > 0])
+    #print("Eigen class avgMAC = ", avgMAC)
+    #Sens = ((DRM).max(0) / (DRM).min(0)).min()
+    #print("Sensitiivity = ", Sens)
+
+    #Change to Compton vs FEP ratio?  No FEP for neutrons.
+    #AvgCountsAngle = np.sum(np.sum(DRM)) / float(np.size(DRM,0) * np.size(DRM,1))
+    #print("Efficiency = ", AvgCountsAngle)
+    #return AutoPMAC, DRM, DRMred, DRMmean, DRMtheta, DRMphi, maxMat, maxMAC, maxSingleMAC, Sens, AvgCountsAngle, avgMAC, avgSingleMAC
+    return Energy, Flux 
+
+
+
+
+
+# ********************* Call functions *********************
+cmd='rm '+ MainDir + '/*.r'
+subprocess.call(cmd,shell=True)
+cmd='rm '+ MainDir + '/MCNP.o*'
+subprocess.call(cmd,shell=True)
+cmd='rm '+ MainDir + '/MCNP.e*'
+subprocess.call(cmd,shell=True)
+Energy, Flux = RSManalyze (MainDir, lowerbound, upperbound, lbins, ubins, nbins)
+
+
+# Save output to file
+#f1=open(MainDir + '/Output.inp', 'w')
+#f1.write("%s %f\n%s %f\n%s %e\n%s %f\n%s %f" % ("Eigen class maxMAC = ",maxMAC,"Spartan class maxMAC = ",maxSingleMAC,"Efficiency = ",AvgCountsAngle,"Eigen class avgMAC = ", avgMAC, "Spartan class avgMAC = ", avgSingleMAC))
+#f1.close()
+
+#********************* Plot Data *********************
+import matplotlib.pyplot as plt
+import pprint
+plt.semilogy(Energy, Flux, 'k', label = "All Neutrons")      #******Need Actual Labels for Energy and Flux******
+plt.xlabel("Energy (MeV",fontsize=12)
+plt.ylabel('Flux (particles/cm^2 s)',fontsize=12)           #******Plot Y-axis in Log******
+plt.title('All neutrons collect by RSM',fontsize=14)
+plt.grid()
+plt.legend();
+plt.show()
+pprint(Energy, Flux)
